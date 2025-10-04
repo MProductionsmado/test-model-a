@@ -29,7 +29,7 @@ from tqdm import tqdm
 from conditional_model import ConditionalMinecraftGPT
 from text_tokenizer import TextTokenizer
 from vocab import get_block_vocab
-from schematic_parser import array_to_schematic
+from schematic_parser import SchematicParser
 import numpy as np
 
 
@@ -43,7 +43,7 @@ def load_config(config_path='config.yaml'):
 def load_model(checkpoint_path, config, block_vocab_size, text_vocab_size, device):
     """Load trained model from checkpoint."""
     model = ConditionalMinecraftGPT(
-        vocab_size=block_vocab_size,
+        block_vocab_size=block_vocab_size,
         text_vocab_size=text_vocab_size,
         d_model=config['model']['d_model'],
         n_layers=config['model']['n_layers'],
@@ -51,9 +51,7 @@ def load_model(checkpoint_path, config, block_vocab_size, text_vocab_size, devic
         d_ff=config['model']['d_ff'],
         max_seq_length=config['model']['max_seq_length'],
         max_text_length=config['conditional']['max_text_length'],
-        text_d_model=config['conditional']['text_d_model'],
-        text_n_layers=config['conditional']['text_encoder_layers'],
-        text_n_heads=config['conditional']['text_n_heads'],
+        text_encoder_layers=config['conditional']['text_encoder_layers'],
         dropout=config['model']['dropout']
     ).to(device)
     
@@ -130,18 +128,21 @@ def generate_structure(model, text_prompt, text_tokenizer, block_vocab, config, 
     text_ids = text_tokenizer.encode(text_prompt)
     max_text_length = config['conditional']['max_text_length']
     
+    # Get PAD token ID
+    pad_token_id = text_tokenizer.word_to_id.get('<PAD>', 0)
+    
     # Pad or truncate
     if len(text_ids) < max_text_length:
-        text_ids = text_ids + [text_tokenizer.pad_token_id] * (max_text_length - len(text_ids))
+        text_ids = text_ids + [pad_token_id] * (max_text_length - len(text_ids))
     else:
         text_ids = text_ids[:max_text_length]
     
     text_ids = torch.tensor([text_ids], dtype=torch.long).to(device)
-    text_mask = (text_ids != text_tokenizer.pad_token_id).float()
+    text_mask = (text_ids != pad_token_id).float()
     
-    # Start with BOS token
-    bos_token = block_vocab['<BOS>']
-    generated = torch.tensor([[bos_token]], dtype=torch.long).to(device)
+    # Start with START token (BOS)
+    start_token = block_vocab.get('<START>', block_vocab.get('<BOS>', 2))
+    generated = torch.tensor([[start_token]], dtype=torch.long).to(device)
     
     # Get inverse vocabulary for decoding
     idx_to_block = {v: k for k, v in block_vocab.items()}
@@ -171,17 +172,19 @@ def generate_structure(model, text_prompt, text_tokenizer, block_vocab, config, 
             # Append to generated sequence
             generated = torch.cat([generated, next_token.unsqueeze(0)], dim=1)
             
-            # Check for EOS token
-            if next_token.item() == block_vocab['<EOS>']:
+            # Check for END token (EOS)
+            end_token = block_vocab.get('<END>', block_vocab.get('<EOS>', 3))
+            if next_token.item() == end_token:
                 break
             
             pbar.update(1)
     
-    # Convert to block sequence (remove BOS)
+    # Convert to block sequence (remove START token)
     block_sequence = generated[0, 1:].cpu().numpy()
     
-    # Remove EOS if present
-    if block_sequence[-1] == block_vocab['<EOS>']:
+    # Remove END token if present
+    end_token = block_vocab.get('<END>', block_vocab.get('<EOS>', 3))
+    if len(block_sequence) > 0 and block_sequence[-1] == end_token:
         block_sequence = block_sequence[:-1]
     
     # Pad to full size if needed
@@ -213,9 +216,12 @@ def generate_structure(model, text_prompt, text_tokenizer, block_vocab, config, 
 
 def save_structure(blocks, output_path, description="Generated structure"):
     """Save structure as .schem file."""
-    schem = array_to_schematic(blocks, description=description)
-    schem.save(output_path)
-    print(f"✓ Structure saved: {output_path}")
+    parser = SchematicParser(target_size=(16, 16, 16))
+    success = parser.array_to_schematic(blocks, output_path, description)
+    if success:
+        print(f"✓ Structure saved: {output_path}")
+    else:
+        print(f"✗ Failed to save structure: {output_path}")
 
 
 def generate_variations(model, text_prompt, text_tokenizer, block_vocab, config, device,

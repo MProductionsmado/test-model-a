@@ -58,34 +58,37 @@ def create_model(config, block_vocab_size, text_vocab_size, device):
     return model
 
 
-def train_epoch(model, dataloader, optimizer, criterion, device, epoch, writer, global_step):
-    """Train for one epoch."""
+def train_epoch(model, dataloader, optimizer, criterion, device, epoch, writer, global_step, scaler=None):
+    """Train for one epoch with optional mixed precision."""
     model.train()
     total_loss = 0
+    use_amp = scaler is not None
     progress_bar = tqdm(dataloader, desc=f'Epoch {epoch}')
     
     for batch_idx, batch in enumerate(progress_bar):
-        text_ids = batch['text_ids'].to(device)
-        text_mask = batch['text_mask'].to(device)
-        input_blocks = batch['input_blocks'].to(device)
-        target_blocks = batch['target_blocks'].to(device)
+        text_ids = batch['text_ids'].to(device, non_blocking=True)
+        text_mask = batch['text_mask'].to(device, non_blocking=True)
+        input_blocks = batch['input_blocks'].to(device, non_blocking=True)
+        target_blocks = batch['target_blocks'].to(device, non_blocking=True)
         
-        # Forward pass
-        optimizer.zero_grad()
-        logits = model(input_blocks, text_ids, text_mask)
+        optimizer.zero_grad(set_to_none=True)  # Faster than zero_grad()
         
-        # Calculate loss
-        # logits: (batch_size, seq_length, vocab_size)
-        # target_blocks: (batch_size, seq_length)
-        loss = criterion(logits.view(-1, logits.size(-1)), target_blocks.view(-1))
+        # Forward pass with automatic mixed precision
+        with torch.amp.autocast('cuda', enabled=use_amp, dtype=torch.bfloat16):
+            logits = model(input_blocks, text_ids, text_mask)
+            loss = criterion(logits.view(-1, logits.size(-1)), target_blocks.view(-1))
         
         # Backward pass
-        loss.backward()
-        
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
-        optimizer.step()
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
         
         # Update statistics
         total_loss += loss.item()
@@ -229,13 +232,14 @@ def main():
     text_vocab_size = text_tokenizer.vocab_size
     print(f"Text vocabulary size: {text_vocab_size}")
     
-    # Create datasets
+    # Create datasets with automatic caching (optimal performance)
     print("\nLoading datasets...")
     target_size = (
         config['structure']['size_x'],
         config['structure']['size_y'],
         config['structure']['size_z']
     )
+    
     train_dataset = ConditionalStructureDataset(
         data_dir=args.data_path,
         text_tokenizer=text_tokenizer,
@@ -256,13 +260,18 @@ def main():
         )
         print(f"Validation samples: {len(val_dataset)}")
     
-    # Create dataloaders
+    # Create dataloaders with optimized settings
+    use_pin_memory = config['training'].get('pin_memory', True) and device.type == 'cuda'
+    use_persistent_workers = config['training'].get('persistent_workers', True)
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['training']['batch_size'],
         shuffle=True,
         num_workers=config['training']['num_workers'],
-        pin_memory=True if device.type == 'cuda' else False
+        pin_memory=use_pin_memory,
+        persistent_workers=use_persistent_workers if config['training']['num_workers'] > 0 else False,
+        prefetch_factor=2 if config['training']['num_workers'] > 0 else None
     )
     
     val_loader = None
@@ -272,7 +281,9 @@ def main():
             batch_size=config['training']['batch_size'],
             shuffle=False,
             num_workers=config['training']['num_workers'],
-            pin_memory=True if device.type == 'cuda' else False
+            pin_memory=use_pin_memory,
+            persistent_workers=use_persistent_workers if config['training']['num_workers'] > 0 else False,
+            prefetch_factor=2 if config['training']['num_workers'] > 0 else None
         )
     
     # Create model
@@ -302,6 +313,12 @@ def main():
     
     # Loss function
     criterion = nn.CrossEntropyLoss(ignore_index=block_vocab['<PAD>'])
+    
+    # Mixed Precision Training (BF16 für H100)
+    use_mixed_precision = config['training'].get('mixed_precision', False) and device.type == 'cuda'
+    scaler = torch.amp.GradScaler('cuda', enabled=use_mixed_precision) if use_mixed_precision else None
+    if use_mixed_precision:
+        print("✓ Mixed Precision (BF16) enabled - 2-3x speedup on H100!")
     
     # Load checkpoint if resuming
     start_epoch = 0
@@ -336,7 +353,7 @@ def main():
         # Train
         train_loss, global_step = train_epoch(
             model, train_loader, optimizer, criterion, device,
-            epoch, writer, global_step
+            epoch, writer, global_step, scaler
         )
         
         # Validate

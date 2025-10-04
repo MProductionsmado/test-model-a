@@ -42,16 +42,19 @@ def get_block_name(block_id: int) -> str:
 
 
 class SchematicParser:
-    """Parser for Minecraft .schem files (Sponge Format V2)."""
+    """Parser for Minecraft .schem files (Sponge Format V2) with built-in caching."""
     
-    def __init__(self, target_size: Tuple[int, int, int] = (16, 16, 16)):
+    def __init__(self, target_size: Tuple[int, int, int] = (16, 16, 16), cache_parsed: bool = True):
         """
         Initialize the schematic parser.
         
         Args:
             target_size: Target dimensions (x, y, z) for structures
+            cache_parsed: Cache parsed structures in memory (FAST but uses RAM)
         """
         self.target_size = target_size
+        self.cache_enabled = cache_parsed
+        self._parse_cache = {} if cache_parsed else None
         self.size_x, self.size_y, self.size_z = target_size
         
     def load_schematic(self, filepath: str) -> Optional[Dict]:
@@ -235,6 +238,7 @@ class SchematicParser:
     def parse_file(self, filepath: str) -> Optional[np.ndarray]:
         """
         Complete pipeline: load, parse, resize, and flatten a .schem file.
+        Uses cache to avoid re-parsing the same file multiple times.
         
         Args:
             filepath: Path to .schem file
@@ -242,6 +246,11 @@ class SchematicParser:
         Returns:
             1D numpy array of block IDs, or None on failure
         """
+        # Check cache first (MAJOR SPEEDUP!)
+        if self.cache_enabled and filepath in self._parse_cache:
+            return self._parse_cache[filepath]
+        
+        # Parse file
         schem = self.load_schematic(filepath)
         if schem is None:
             return None
@@ -249,6 +258,10 @@ class SchematicParser:
         block_array = self.schematic_to_array(schem)
         resized = self.resize_structure(block_array)
         flattened = self.flatten_structure(resized)
+        
+        # Store in cache
+        if self.cache_enabled:
+            self._parse_cache[filepath] = flattened
         
         return flattened
     

@@ -27,7 +27,7 @@ structure:
 
 # Training Configuration
 training:
-  batch_size: 16            # Batch size for training (reduce if out of memory)
+  batch_size: 48            # H100 optimal: 48 (64 = OOM, 32 = sicher aber langsamer)
   learning_rate: 0.0001
   weight_decay: 0.01
   num_epochs: 100
@@ -36,8 +36,11 @@ training:
   save_interval: 5          # Save checkpoint every N epochs
   log_interval: 100         # Log every N batches
   augment: true             # Use data augmentation (rotations, flips)
-  num_workers: 4            # Number of data loading workers (set to 0 for CPU)
+  num_workers: 16           # H100 optimiert: 12-16 Worker für schnelles Datenladen
+  pin_memory: true          # Beschleunigt GPU Transfer
+  persistent_workers: true  # Hält Worker am Leben (schneller)
   gradient_checkpointing: false  # Enable to save memory (slower but uses less RAM)
+  mixed_precision: true     # BF16 für H100 (2-3x Speedup!)
   
 # Data Configuration
 data:
