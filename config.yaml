@@ -1,0 +1,66 @@
+# Minecraft Structure Generator - Configuration
+
+# Model Architecture
+model:
+  name: "ConditionalMinecraftGPT"
+  d_model: 512              # Embedding dimension
+  n_layers: 12              # Number of transformer layers
+  n_heads: 8                # Number of attention heads
+  d_ff: 2048                # Feed-forward dimension
+  dropout: 0.1              # Dropout rate
+  max_seq_length: 4097      # Maximum sequence length (16x16x16 + 1 = 4097 tokens)
+
+# Conditional Text Encoder Settings
+conditional:
+  max_text_length: 128      # Maximum text description length in tokens
+  text_vocab_size: 2000     # Number of unique words in text vocabulary
+  text_encoder_layers: 4    # Number of layers in text encoder
+  text_d_model: 256         # Text embedding dimension
+  text_n_heads: 8           # Number of attention heads in text encoder
+  
+# Structure Dimensions
+structure:
+  size_x: 16                # Structure dimensions (16x16x16 = 4096 blocks)
+  size_y: 16
+  size_z: 16
+  total_blocks: 4096        # 16 * 16 * 16
+
+# Training Configuration
+training:
+  batch_size: 16            # Batch size for training (reduce if out of memory)
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  num_epochs: 100
+  warmup_steps: 1000
+  max_grad_norm: 1.0
+  save_interval: 5          # Save checkpoint every N epochs
+  log_interval: 100         # Log every N batches
+  augment: true             # Use data augmentation (rotations, flips)
+  num_workers: 4            # Number of data loading workers (set to 0 for CPU)
+  gradient_checkpointing: false  # Enable to save memory (slower but uses less RAM)
+  
+# Data Configuration
+data:
+  train_dir: "data/train"
+  val_dir: "data/val"
+  test_dir: "data/test"
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+
+# Generation Configuration
+generation:
+  temperature: 0.9          # Sampling temperature (higher = more random)
+  top_k: 50                # Top-k sampling
+  top_p: 0.95              # Nucleus sampling
+  max_new_tokens: 4096     # Maximum tokens to generate
+  seed: 42                 # Random seed for reproducibility
+
+# Paths
+paths:
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+  output_dir: "generated_structures"
+  
+# Device
+device: "cuda"  # or "cpu"
